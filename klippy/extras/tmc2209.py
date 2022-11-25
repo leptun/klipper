@@ -5,7 +5,6 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from . import tmc2208, tmc2130, tmc, tmc_uart
 
-TMC_FREQUENCY=12000000.
 
 Registers = dict(tmc2208.Registers)
 Registers.update({
@@ -55,6 +54,8 @@ FieldFormatters = dict(tmc2208.FieldFormatters)
 
 class TMC2209:
     def __init__(self, config):
+        self.tmc_frequency = config.getfloat('tmc_frequency',
+            12000000., minval=4000000., maxval=16000000.)
         # Setup mcu communication
         self.fields = tmc.FieldHelper(Fields, tmc2208.SignedFields,
                                       FieldFormatters)
@@ -62,34 +63,52 @@ class TMC2209:
         # Setup fields for UART
         self.fields.set_field("pdn_disable", True)
         self.fields.set_field("senddelay", 2) # Avoid tx errors on shared uart
+        # Set microstep config options
+        tmc.TMCMicrostepHelper(config, self.mcu_tmc)
         # Allow virtual pins to be created
-        tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
+        tmc.TMCVirtualPinHelper(config, self.mcu_tmc, self.tmc_frequency)
         # Register commands
         current_helper = tmc2130.TMCCurrentHelper(config, self.mcu_tmc)
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc, current_helper)
         cmdhelper.setup_register_dump(ReadRegisters)
         self.get_phase_offset = cmdhelper.get_phase_offset
         self.get_status = cmdhelper.get_status
+        tmc.TMCHomingCurrentHelper(config, self.mcu_tmc, current_helper)
         # Setup basic register values
         self.fields.set_field("pdn_disable", True)
         self.fields.set_field("mstep_reg_select", True)
         self.fields.set_field("multistep_filt", True)
-        tmc.TMCStealthchopHelper(config, self.mcu_tmc, TMC_FREQUENCY)
+        tmc.TMCStealthchopHelper(config, self.mcu_tmc, self.tmc_frequency)
+        tmc.TMCcoolStepHelper(config, self.mcu_tmc, self.tmc_frequency)
         # Allow other registers to be set from the config
         set_config_field = self.fields.set_config_field
+        # CHOPCONF
         set_config_field(config, "toff", 3)
         set_config_field(config, "hstrt", 5)
         set_config_field(config, "hend", 0)
         set_config_field(config, "tbl", 2)
+        set_config_field(config, "diss2g", 0)
+        set_config_field(config, "diss2vs", 0)
+        # COOLCONF
+        set_config_field(config, "semin", 0)
+        set_config_field(config, "seup", 0)
+        set_config_field(config, "semax", 0)
+        set_config_field(config, "sedn", 0)
+        set_config_field(config, "seimin", 0)
+        # IHOLDIRUN
         set_config_field(config, "iholddelay", 8)
-        set_config_field(config, "tpowerdown", 20)
+        # PWMCONF
         set_config_field(config, "pwm_ofs", 36)
         set_config_field(config, "pwm_grad", 14)
         set_config_field(config, "pwm_freq", 1)
         set_config_field(config, "pwm_autoscale", True)
         set_config_field(config, "pwm_autograd", True)
+        set_config_field(config, "freewheel", 0)
         set_config_field(config, "pwm_reg", 8)
         set_config_field(config, "pwm_lim", 12)
+        # TPOWERDOWN
+        set_config_field(config, "tpowerdown", 20)
+        # SGTHRS
         set_config_field(config, "sgthrs", 0)
 
 def load_config_prefix(config):

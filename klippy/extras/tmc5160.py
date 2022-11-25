@@ -6,7 +6,6 @@
 import math, logging
 from . import bus, tmc, tmc2130
 
-TMC_FREQUENCY=12000000.
 
 Registers = {
     "GCONF":            0x00,
@@ -232,6 +231,9 @@ Fields["TPWMTHRS"] = {
 Fields["TCOOLTHRS"] = {
     "tcoolthrs":                0xfffff << 0
 }
+Fields["THIGH"] = {
+    "thigh":                    0xfffff << 0
+}
 Fields["TSTEP"] = {
     "tstep":                    0xfffff << 0
 }
@@ -260,19 +262,18 @@ class TMC5160CurrentHelper:
                                        above=0., maxval=MAX_CURRENT)
         self.req_hold_current = hold_current
         self.sense_resistor = config.getfloat('sense_resistor', 0.075, above=0.)
-        self._set_globalscaler(run_current)
-        irun, ihold = self._calc_current(run_current, hold_current)
+        gscaler, irun, ihold = self._calc_current(run_current, hold_current)
+        self.fields.set_field("globalscaler", gscaler)
         self.fields.set_field("ihold", ihold)
         self.fields.set_field("irun", irun)
-    def _set_globalscaler(self, current):
+    def _calc_globalscaler(self, current):
         globalscaler = int((current * 256. * math.sqrt(2.)
                             * self.sense_resistor / VREF) + .5)
         globalscaler = max(32, globalscaler)
         if globalscaler >= 256:
             globalscaler = 0
-        self.fields.set_field("globalscaler", globalscaler)
-    def _calc_current_bits(self, current):
-        globalscaler = self.fields.get_field("globalscaler")
+        return globalscaler
+    def _calc_current_bits(self, current, globalscaler):
         if not globalscaler:
             globalscaler = 256
         cs = int((current * 256. * 32. * math.sqrt(2.) * self.sense_resistor)
@@ -280,9 +281,10 @@ class TMC5160CurrentHelper:
                  - 1. + .5)
         return max(0, min(31, cs))
     def _calc_current(self, run_current, hold_current):
-        irun = self._calc_current_bits(run_current)
-        ihold = self._calc_current_bits(min(hold_current, run_current))
-        return irun, ihold
+        gscaler = self._calc_globalscaler(max(hold_current, run_current))
+        irun = self._calc_current_bits(run_current, gscaler)
+        ihold = self._calc_current_bits(min(hold_current, run_current), gscaler)
+        return gscaler, irun, ihold
     def _calc_current_from_field(self, field_name):
         globalscaler = self.fields.get_field("globalscaler")
         if not globalscaler:
@@ -295,8 +297,9 @@ class TMC5160CurrentHelper:
         hold_current = self._calc_current_from_field("ihold")
         return run_current, hold_current, self.req_hold_current, MAX_CURRENT
     def set_current(self, run_current, hold_current, print_time):
-        self.req_hold_current = hold_current
-        irun, ihold = self._calc_current(run_current, hold_current)
+        gscaler, irun, ihold = self._calc_current(run_current, hold_current)
+        val = self.fields.set_field("globalscaler", gscaler)
+        self.mcu_tmc.set_register("GLOBALSCALER", val, print_time)
         self.fields.set_field("ihold", ihold)
         val = self.fields.set_field("irun", irun)
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)
@@ -308,22 +311,31 @@ class TMC5160CurrentHelper:
 
 class TMC5160:
     def __init__(self, config):
+        self.tmc_frequency = config.getfloat('tmc_frequency',
+            12000000., minval=4000000., maxval=18000000.)
         # Setup mcu communication
         self.fields = tmc.FieldHelper(Fields, SignedFields, FieldFormatters)
         self.mcu_tmc = tmc2130.MCU_TMC_SPI(config, Registers, self.fields)
+        # Set microstep config options
+        tmc.TMCMicrostepHelper(config, self.mcu_tmc)
         # Allow virtual pins to be created
-        tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
+        tmc.TMCVirtualPinHelper(config, self.mcu_tmc, self.tmc_frequency)
         # Register commands
         current_helper = TMC5160CurrentHelper(config, self.mcu_tmc)
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc, current_helper)
         cmdhelper.setup_register_dump(ReadRegisters)
         self.get_phase_offset = cmdhelper.get_phase_offset
         self.get_status = cmdhelper.get_status
+        tmc.TMCHomingCurrentHelper(config, self.mcu_tmc, current_helper)
         # Setup basic register values
         tmc.TMCWaveTableHelper(config, self.mcu_tmc)
-        tmc.TMCStealthchopHelper(config, self.mcu_tmc, TMC_FREQUENCY)
-        #   CHOPCONF
+        tmc.TMCStealthchopHelper(config, self.mcu_tmc, self.tmc_frequency)
+        tmc.TMCTHIGHHelper(config, self.mcu_tmc, self.tmc_frequency)
+        tmc.TMCcoolStepHelper(config, self.mcu_tmc, self.tmc_frequency)
         set_config_field = self.fields.set_config_field
+        #   GCONF
+        set_config_field(config, "small_hysteresis", False)
+        #   CHOPCONF
         set_config_field(config, "toff", 3)
         set_config_field(config, "hstrt", 5)
         set_config_field(config, "hend", 2)

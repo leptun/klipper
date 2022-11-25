@@ -6,7 +6,6 @@
 import math, logging
 from . import bus, tmc
 
-TMC_FREQUENCY=13200000.
 
 Registers = {
     "GCONF": 0x00, "GSTAT": 0x01, "IOIN": 0x04, "IHOLD_IRUN": 0x10,
@@ -279,33 +278,63 @@ class MCU_TMC_SPI:
 
 class TMC2130:
     def __init__(self, config):
+        self.tmc_frequency = config.getfloat('tmc_frequency',
+            13200000., minval=4000000., maxval=18000000.)
         # Setup mcu communication
         self.fields = tmc.FieldHelper(Fields, SignedFields, FieldFormatters)
         self.mcu_tmc = MCU_TMC_SPI(config, Registers, self.fields)
+        # Set microstep config options
+        tmc.TMCMicrostepHelper(config, self.mcu_tmc)
         # Allow virtual pins to be created
-        tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
+        tmc.TMCVirtualPinHelper(config, self.mcu_tmc, self.tmc_frequency)
         # Register commands
         current_helper = TMCCurrentHelper(config, self.mcu_tmc)
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc, current_helper)
         cmdhelper.setup_register_dump(ReadRegisters)
         self.get_phase_offset = cmdhelper.get_phase_offset
         self.get_status = cmdhelper.get_status
+        tmc.TMCHomingCurrentHelper(config, self.mcu_tmc, current_helper)
         # Setup basic register values
         tmc.TMCWaveTableHelper(config, self.mcu_tmc)
-        tmc.TMCStealthchopHelper(config, self.mcu_tmc, TMC_FREQUENCY)
+        tmc.TMCStealthchopHelper(config, self.mcu_tmc, self.tmc_frequency)
+        tmc.TMCTHIGHHelper(config, self.mcu_tmc, self.tmc_frequency)
+        tmc.TMCcoolStepHelper(config, self.mcu_tmc, self.tmc_frequency)
         # Allow other registers to be set from the config
         set_config_field = self.fields.set_config_field
+        # GCONF
+        set_config_field(config, "small_hysteresis", False)
+        # CHOPCONF
         set_config_field(config, "toff", 4)
         set_config_field(config, "hstrt", 0)
         set_config_field(config, "hend", 7)
+        set_config_field(config, "fd3", 0)
+        set_config_field(config, "disfdcc", 0)
+        set_config_field(config, "rndtf", 0)
+        set_config_field(config, "chm", 0)
         set_config_field(config, "tbl", 1)
+        set_config_field(config, "vhighfs", 0)
+        set_config_field(config, "vhighchm", 0)
+        set_config_field(config, "sync", 0)
+        set_config_field(config, "diss2g", 0)
+        # COOLCONF
+        set_config_field(config, "semin", 0)
+        set_config_field(config, "seup", 0)
+        set_config_field(config, "semax", 0)
+        set_config_field(config, "sedn", 0)
+        set_config_field(config, "seimin", 0)
+        set_config_field(config, "sgt", 0)
+        set_config_field(config, "sfilt", 0)
+        # IHOLDIRUN
         set_config_field(config, "iholddelay", 8)
-        set_config_field(config, "tpowerdown", 0)
+        # PWMCONF
         set_config_field(config, "pwm_ampl", 128)
         set_config_field(config, "pwm_grad", 4)
         set_config_field(config, "pwm_freq", 1)
         set_config_field(config, "pwm_autoscale", True)
-        set_config_field(config, "sgt", 0)
+        set_config_field(config, "pwm_symmetric", False)
+        set_config_field(config, "freewheel", 0)
+        # TPOWERDOWN
+        set_config_field(config, "tpowerdown", 0)
 
 def load_config_prefix(config):
     return TMC2130(config)
